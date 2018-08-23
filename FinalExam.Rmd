@@ -1,0 +1,304 @@
+---
+title: "Final Exam"
+author: "Tyler Reed"
+date: "August 11, 2018"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(sqldf)
+library(caret)
+library(dplyr)
+library(data.table)
+library(tidyverse)
+library(randomForest)
+library(e1071)
+library(ggplot2)
+library(corrplot)
+library(pls)
+```
+
+
+## Import Data
+
+```{r echo=TRUE}
+build_data <- read.csv('https://raw.githubusercontent.com/da6813/summer18/master/final_exam/final_exam_train.csv')
+results_data <- read.csv('https://raw.githubusercontent.com/da6813/summer18/master/final_exam/final_exam_test.csv')
+#summary(build_data)
+#str(build_data)
+```
+
+
+## Data Preprocessing
+
+# Looking for Near Zero Variance
+
+```{r echo=TRUE}
+set.seed(123)
+
+nzv = nearZeroVar(build_data)          
+
+nonZeroVar = build_data[, -nzv] # Removed 18 columns due to Near Zero Variance
+
+colnames(nonZeroVar)
+```
+
+
+# Looking for Correlation
+
+```{r echo=TRUE}
+correlation = cor(nonZeroVar)
+
+correlation
+
+nonCorrVar = nonZeroVar[,-11] # High correlation exists between eff_front and eff_depth predictors. I removed eff_depth.
+colnames(nonCorrVar)
+```
+
+
+# Looking for Skewness
+
+```{r echo=TRUE}
+skewValues = apply(nonCorrVar, 2, skewness)
+skewValues
+```
+
+
+# Settling on a final set of predictors
+
+```{r echo=TRUE}
+finalData = nonCorrVar[-1] # Removed the property_ID predictor because it adds no value to my model.
+colnames(finalData)
+
+featurePlot(x = finalData[, 1:9],  y = finalData$value,
+            plot = "scatter",
+            type = c("p", "smooth"),
+            layout = c(3,1))
+```
+
+
+## Sample Selection - Generate a Training and Test Set
+
+```{r echo=TRUE}
+set.seed(123)
+train = createDataPartition(finalData[,1], p = .75, list = FALSE)
+
+propTrain = finalData[train,]
+propTest = finalData[-train,]
+
+finalResults = sqldf("select AG, DCK, LA, LA2,
+                     OP, PA, year_built, acres,
+                     eff_front from results_data") # Used SQL to match predictors in the results_data dataset.
+```
+
+
+# Model input - I tried different predictor combinations, but settled on the ones below.
+
+```{r echo=TRUE}
+model = (value ~ AG + DCK + LA + LA2 + OP + PA + year_built + acres + eff_front)
+```
+
+
+Random Forest - training
+
+```{r}
+set.seed(123)
+control = trainControl(method = "repeatedcv", number = 10, repeats = 10)
+metric = "RMSE"
+tunegrid = expand.grid(.mtry=c(1:9))
+
+rfTune = train(model, data=propTrain,
+               method="rf",
+               tuneGrid=tunegrid,
+               trControl=control)
+
+rfTune
+```
+
+
+Random Forest - testing
+
+```{r}
+rfTest = predict(rfTune, newdata = propTest)
+
+RMSE(rfTest, propTest$value)
+```
+
+```{r}
+rfValidate = predict(rfTune, newdata = finalResults)
+
+rfValidate
+```
+
+
+Logistic Regression - training
+
+```{r echo=TRUE}
+set.seed(123)
+glmTune = train(model, data = propTrain,
+                method = "glm",
+                preProc = c("center", "scale"),
+                trControl = trainControl(method = "repeatedcv", repeats = 10))
+
+glmTune
+```
+
+
+Logistic Regression - testing
+
+```{r}
+glmTest = predict(glmTune, newdata = propTest)
+
+RMSE(glmTest, propTest$value)
+```
+
+```{r}
+glmValidate = predict(glmTune, newdata = finalResults)
+
+glmValidate
+```
+
+
+PCA - training
+
+```{r}
+pcaTune = train(model, data = propTrain,
+                method = "glm",
+                preProc = c("center", "scale", "pca"),
+                trControl = trainControl(method = "repeatedcv", number = 10, repeats = 10)) 
+pcaTune
+```
+
+
+PCA - testing
+
+```{r}
+pcaTest = predict(pcaTune, newdata = propTest)
+
+RMSE(pcaTest, propTest$value)
+```
+
+
+PLS - training
+
+```{r}
+plsTune = train(model, data = propTrain,
+                method = "pls",
+                preProc = c("center", "scale"),
+                trControl = trainControl(method = "repeatedcv", number = 10, repeats = 10))
+plsTune
+```
+
+
+PLS - testing
+
+```{r}
+plsTest = predict(plsTune, newdata = propTest)
+
+RMSE(plsTest, propTest$value)
+```
+
+
+Ridge - training
+
+```{r}
+ridgeGrid = data.frame(.lambda = seq(0, .1, length = 15))
+ridgeTune = train(model, data = propTrain, 
+                   method = "ridge", 
+                   preProc = c("center", "scale"), 
+                   trControl = trainControl(method = "repeatedcv", number = 10, repeats = 10),
+                   tuneGrid = ridgeGrid)
+ridgeTune
+```
+
+
+Ridge - testing
+
+```{r}
+ridgeTest = predict(ridgeTune, newdata = propTest)
+
+RMSE(ridgeTest, propTest$value)
+```
+
+```{r}
+ridgeValidate = predict(ridgeTune, newdata = finalResults)
+
+ridgeValidate
+```
+
+
+SVM - training
+
+```{r}
+set.seed(123)
+svmTune = train(model, data = propTrain,
+                method = "svmRadial",
+                preProc = c("center", "scale"),
+                tuneLength = 10,
+                trControl = trainControl(method = "repeatedcv", number = 10, repeats = 10))
+svmTune
+```
+
+
+SVM - testing
+
+```{r}
+svmTest = predict(svmTune, newdata = propTest)
+
+RMSE(svmTest, propTest$value)
+```
+
+```{r}
+svmValidate = predict(svmTune, newdata = finalResults)
+
+svmValidate
+```
+
+
+## Model Selection
+
+```{r echo=TRUE}
+rfTest
+RMSE(rfTest, propTest$value)
+
+glmTune
+RMSE(glmTest, propTest$value)
+
+pcaTune
+RMSE(pcaTest, propTest$value)
+
+plsTune
+RMSE(plsTest, propTest$value)
+
+ridgeTune
+RMSE(ridgeTest, propTest$value)
+
+svmTune
+RMSE(svmTest, propTest$value)
+```
+
+## What is the expected accuracy of your approach (R^2 / RMSE / MAE etc.)?
+
+For this exercise, I choose the GLM model due to its simplicity and relatively good RMSE of 10996.49, R^2 of 89.46%, and MAE of 8402.936.
+
+Using RMSE, the expected accuracy is 11369.63.
+
+```{r}
+results <- resamples(list(RF = rfTune, GLM = glmTune, PCA = pcaTune, PLS = plsTune, RIDGE = ridgeTune, SVM = svmTune))
+summary(results)
+
+RMSE(glmTest, propTest$value) #RMSE for my glmTest prediction.
+```
+
+
+
+## Predict the House Values for `results_data` 
+
+```{r echo=TRUE}
+glmValidate = predict(glmTune, newdata = finalResults)
+
+glmValidate
+```
+
+
